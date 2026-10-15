@@ -1,0 +1,66 @@
+name: Build AMem
+
+on:
+  push:
+    branches: [ dev, WinGui, docking ]
+  pull_request:
+    branches: [ dev ]
+  workflow_dispatch:
+
+env:
+  BUILD_TYPE: Release
+  LLVM_VERSION: 21
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Setup LLVM
+      uses: KyleMayes/install-llvm-action@v2
+      with:
+        version: ${{ env.LLVM_VERSION }}
+        directory: ${{ runner.temp }}/llvm
+
+    - name: Setup Ninja
+      uses: seanmiddleditch/gha-setup-ninja@v4
+
+    - name: Install capstone + keystone (static /MT)
+      # 反汇编(capstone)/汇编(keystone)核心库，静态链接进单 exe。
+      # 用引号避免 bash 把 [feature] 当通配符；keystone 会编译其捆绑的 LLVM 后端，耗时较长。
+      run: |
+        vcpkg install 'capstone[core,arm,arm64,x86,mips]:x64-windows-static' 'keystone:x64-windows-static'
+      shell: bash
+
+    - name: Configure CMake (static capstone + keystone)
+      run: |
+        cmake -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=TRUE \
+          -DCMAKE_C_COMPILER="${{ runner.temp }}/llvm/bin/clang.exe" \
+          -DCMAKE_CXX_COMPILER="${{ runner.temp }}/llvm/bin/clang++.exe" \
+          -Dcapstone_ROOT="$VCPKG_INSTALLATION_ROOT/installed/x64-windows-static" \
+          -Dkeystone_ROOT="$VCPKG_INSTALLATION_ROOT/installed/x64-windows-static" \
+          -S . -B build -G Ninja
+      shell: bash
+
+    - name: Build
+      run: cmake --build build --config ${{ env.BUILD_TYPE }}
+      shell: bash
+
+    - name: Show build output
+      run: ls -la bin/
+      shell: bash
+
+    - name: Upload artifacts
+      # 完全静态链接（/MT + 静态第三方库）：产物是单个自包含 exe，无随附 DLL。
+      uses: actions/upload-artifact@v4
+      with:
+        name: AMem-${{ github.sha }}
+        path: bin/ImGuiProject.exe
+        if-no-files-found: error
+        retention-days: 7
